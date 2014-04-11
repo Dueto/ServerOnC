@@ -20,6 +20,12 @@ struct mysql_database
     char *database_name; 
 };
 
+struct result
+{
+    char *bufer;
+    unsigned long long sum;
+};
+
 //MYSQL_TYPE_DOUBLE
 
 char *form_sql_statement(char *table_columns,
@@ -134,6 +140,144 @@ int concatenate(char* string, int string_length, char* to_concatenat, int concat
     return string_length + (sizeof(char) * concatanate_length);
 }
 
+char *str_replace(char *orig, char *rep, char *with) 
+{
+    char *result; 
+    char *ins;   
+    char *tmp;   
+    int len_rep;  
+    int len_with; 
+    int len_front; 
+    int count;   
+
+    if (!orig)
+        return NULL;
+    if (!rep)
+        rep = "";
+    len_rep = strlen(rep);
+    if (!with)
+        with = "";
+    len_with = strlen(with);
+
+    ins = orig;
+    for (count = 0; tmp = strstr(ins, rep); ++count) {
+        ins = tmp + len_rep;
+    }
+
+    tmp = result = malloc(strlen(orig) + (len_with - len_rep) * count + 1);
+
+    if (!result)
+        return NULL;
+
+    while (count--) {
+        ins = strstr(orig, rep);
+        len_front = ins - orig;
+        tmp = strncpy(tmp, orig, len_front) + len_front;
+        tmp = strcpy(tmp, with) + len_with;
+        orig += len_front + len_rep; 
+    }
+    strcpy(tmp, orig);
+    return result;
+}
+
+char *format_date(char *date, char *micrsec)
+{
+        int date_len = strlen(date);
+        int micrsec_len = strlen(micrsec);
+  
+        char *copy = (char *) malloc (date_len); 
+        memset(copy, 0, date_len);        
+       
+        char *micrsec_copy = (char *) malloc (micrsec_len);      
+        memset(micrsec_copy, 0, micrsec_len);  
+
+        concatenate(micrsec_copy, 0, micrsec, micrsec_len);   
+        concatenate(copy, 0, date, date_len);
+        
+        copy = str_replace(copy, " ", "T");   
+        copy = (char *) realloc (copy, date_len + micrsec_len + 1);
+        
+        concatenate(copy, date_len, ".", 1);        
+        concatenate(copy, date_len + 1, micrsec_copy, micrsec_len); 
+        free(micrsec_copy);
+
+        return copy;
+};
+
+struct result *form_result(MYSQL_RES *res, int channel_count, int is_microseconds)
+{
+    MYSQL_ROW row;
+    char *bufer;          
+    unsigned long long sum = 0; 
+    while((row = mysql_fetch_row(res)) != NULL)
+    {   
+        char *date;
+        int counter = 0;
+        if(is_microseconds)
+        {
+            date = format_date(row[0], row[1]);
+            counter = 2;
+        }
+        else
+        {
+            date = format_date(row[0], "000000000");
+            counter = 1;
+        }
+        int date_len = 29;  
+        if(sum == 0)
+        {
+            bufer = (char *) malloc (date_len); 
+            memset(bufer, 0, date_len);   
+
+            sum = sum + date_len;
+            bufer = strncpy(bufer, date, date_len);   
+            
+            //sum = Concatenate(bufer, sum, row[0], strlen(row[0]));
+
+        }
+        else
+        {
+            
+            sum = sum + date_len;
+            bufer = (char *) realloc (bufer, sum); 
+
+            sum = concatenate(bufer, sum - date_len, date, date_len);          
+            free(date);
+        }  
+        int i = 0;
+        for(i = 0; i < channel_count; i++)
+        { 
+            double point = strtod(row[i + counter], (char **)NULL); 
+            char *string_point = get_representation(point);
+
+            sum = sum + sizeof(double) + 1;                   
+            bufer = (char *) realloc (bufer, sum); 
+
+            sum = concatenate(bufer, sum - (sizeof(double) + 1), string_point, (sizeof(double) + 1));   
+        }
+    }    
+    struct result str = {bufer, sum};
+    return &str;
+    
+};
+
+int is_microseconds(char *string)
+{
+    char *bufer = (char *) malloc (strlen(string)); 
+    memset(bufer, 0, strlen(string));   
+    
+    bufer = strncpy(bufer, string, strlen(string));      
+    char *comp = strstr(bufer, "ns");
+    if(comp != NULL)
+    {               
+        return 1;
+    }
+    else
+    {        
+        return 0;
+    }
+};
+
 int 
 onmessage(libwebsock_client_state *state, libwebsock_message *msg)
 {   
@@ -172,59 +316,26 @@ onmessage(libwebsock_client_state *state, libwebsock_message *msg)
   }
   else  
   {      
-      char *table_columns = form_table_columns(columns);                   
+      char *table_columns = form_table_columns(columns);   
+      int is_microsec = is_microseconds(table_columns);  
       char *sql_statement = form_sql_statement(table_columns, table_name, begin_time, end_time); 
       MYSQL_ROW row;        
-      MYSQL_RES *res = get_result(sql_statement, mysql);
+      MYSQL_RES *res = get_result(sql_statement, mysql); 
       if(res == NULL)
       {
           libwebsock_send_text(state, "No data in request.");      
       }
       else
-      {   
-          char *bufer;          
-          unsigned long long sum = 0;           
-          while((row = mysql_fetch_row(res)) != NULL)
-          {   
-              if(sum == 0)
-              {
-                  bufer = (char *) malloc (strlen(row[0])); 
-                  memset(bufer, 0, strlen(row[0]));   
-                  
-                  sum = sum + strlen(row[0]);
-                  bufer = strncpy(bufer, row[0], strlen(row[0]));                  
-                  //sum = Concatenate(bufer, sum, row[0], strlen(row[0]));
-                 
-              }
-              else
-              {
-                  sum = sum + strlen(row[0]);
-                  bufer = (char *) realloc (bufer, sum); 
-                  
-                  sum = concatenate(bufer, sum - strlen(row[0]), row[0], strlen(row[0]));                  
-              }  
-              int i = 0;
-              for(i = 0; i < channel_count; i++)
-              { 
-                  double point = strtod(row[i + 1], (char **)NULL); 
-                  char *string_point = get_representation(point);
-                  
-                  sum = sum + sizeof(double) + 1;                   
-                  bufer = (char *) realloc (bufer, sum); 
-                  
-                  sum = concatenate(bufer, sum - (sizeof(double) + 1), string_point, (sizeof(double) + 1));   
-              }
-          }       fprintf(stderr, "VOROBEI\n");
-          libwebsock_send_binary(state, bufer, sum);            
+      {  
+          struct result *response = form_result(res, channel_count, is_microsec);
+          
+          libwebsock_send_binary(state, response->bufer, response->sum);            
           mysql_free_result(res);  
-          mysql_close(mysql->database);
-         // free(bufer); 
-          //free(table_columns);
-         // free(sql_statement); 
-         //free(copy);
-          
-          
-          
+          mysql_close(mysql->database);         
+          free(table_columns);
+          free(sql_statement);          
+          //free(copy);
+          //free(bufer); 
       }       
   }  
   return 0;
